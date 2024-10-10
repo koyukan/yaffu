@@ -4,7 +4,6 @@ import { Console } from 'node:console'
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
-import { Readable } from 'node:stream'
 import { Codec, ENCODER } from './codec.js'
 import { FilterGraph } from './graph.js'
 import { unlinkNoThrow } from './util.js'
@@ -135,30 +134,40 @@ export async function mux(
   }
   console.dir(graph.pipes.map((p) => p.serialize()))
 
-  const ffmpeg = spawn(
-    'ffmpeg',
-    [
-      verbose ? '-hide_banner' : '-v warning',
-      ...inputs.flatMap((input) => [
-        ...(input.opts ?? []),
-        `-i "${input.path}"`,
-      ]),
-      '-/filter_complex pipe:',
-      ...outputs.flatMap(([outputPath, streams]) => [
-        ...streams.map((stream) => stream.serialize()),
-        '-y',
-        outputPath,
-      ]),
-    ],
-    {
-      shell: true,
-      stdio: ['pipe', process.stderr, 'inherit'],
-    },
-  )
+  // Generate the filter_complex string
+  let filterComplex = graph.serialize()
+
+  // If filterComplex is an array, join it; otherwise, use it as is
+  if (Array.isArray(filterComplex)) {
+    filterComplex = filterComplex.join(';')
+  }
+
+  // Escape special characters in the filter complex string
+  const escapedFilterComplex = filterComplex.replace(/'/g, "'\\''")
+
+  const ffmpegArgs = [
+    verbose ? '-hide_banner' : '-v',
+    'warning',
+    ...inputs.flatMap((input) => [...(input.opts ?? []), '-i', input.path]),
+    '-filter_complex',
+    `'${escapedFilterComplex}'`,
+    ...outputs.flatMap(([outputPath, streams]) => [
+      ...streams.map((stream) => stream.serialize()),
+      '-y',
+      outputPath,
+    ]),
+  ]
+
+  console.log('FFmpeg command:', ffmpegArgs.join(' '))
+
+  const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
+    shell: true,
+    stdio: ['pipe', process.stderr, 'inherit'],
+  })
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const ignoreError = bestEffort // continue even if FFmpeg complains about corrupted inputs
+      const ignoreError = bestEffort
       const errorHandler = ignoreError ? console.error : reject
 
       ffmpeg.on('error', errorHandler)
@@ -168,8 +177,6 @@ export async function mux(
           if (bestEffort) resolve()
         } else resolve()
       })
-
-      Readable.from(graph.serialize()).pipe(ffmpeg.stdin)
     })
   } catch (e) {
     await Promise.all(outputs.map(([outputPath]) => unlinkNoThrow(outputPath)))

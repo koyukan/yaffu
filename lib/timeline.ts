@@ -252,7 +252,7 @@ export class Timeline {
     console.table(potentialCutPoints)
 
     let speakers: Participant[] = []
-    let talkers: Participant[] = []
+    const talkers: Participant[] = []
     let presentations: Presentation[] = []
 
     this.#cuts = [new TimelineCut([], undefined, undefined, this.resolution)]
@@ -268,30 +268,41 @@ export class Timeline {
           (p) => p === point.presentation
         )
         nextPresentations.splice(index, 1)
+
         // CHANGE: Handle video-only cut points
       } else if (
         point.kind === 'openMic' ||
         (this.includeVideoOnlyCuts && point.kind === 'startVideo')
       ) {
-        nextSpeakers.push(point.participant)
-      } else if (
-        point.kind === 'closeMic' ||
-        (this.includeVideoOnlyCuts && point.kind === 'stopVideo')
-      ) {
-        {
+        if (!nextSpeakers.includes(point.participant)) {
+          nextSpeakers.push(point.participant)
+        }
+      } else if (point.kind === 'closeMic') {
+        // Only remove from speakers if there's no active video
+        const hasActiveVideo = this.clips
+          .get(point.participant)
+          ?.some(
+            (c) =>
+              c.hasVideo && c.startTime <= point.time && c.endTime > point.time
+          )
+        if (!hasActiveVideo) {
           const index = nextSpeakers.findIndex((p) => p === point.participant)
-          nextSpeakers.splice(index, 1)
+          if (index !== -1) nextSpeakers.splice(index, 1)
         }
-        {
-          const index = talkers.findIndex((p) => p === point.participant)
-          talkers.splice(index, 1)
-        }
-      } else if (point.kind === 'startTalk') {
-        if (
-          !talkers.includes(point.participant) &&
-          talkers.push(point.participant) > 4
-        ) {
-          talkers = talkers.slice(-4)
+        // Always remove from talkers on closeMic
+        const talkerIndex = talkers.findIndex((p) => p === point.participant)
+        if (talkerIndex !== -1) talkers.splice(talkerIndex, 1)
+      } else if (this.includeVideoOnlyCuts && point.kind === 'stopVideo') {
+        // Only remove from speakers if there's no active audio
+        const hasActiveAudio = this.clips
+          .get(point.participant)
+          ?.some(
+            (c) =>
+              c.hasAudio && c.startTime <= point.time && c.endTime > point.time
+          )
+        if (!hasActiveAudio) {
+          const index = nextSpeakers.findIndex((p) => p === point.participant)
+          if (index !== -1) nextSpeakers.splice(index, 1)
         }
       }
 
